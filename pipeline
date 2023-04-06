@@ -1,0 +1,157 @@
+pipeline{
+    agent any
+    
+    stages{
+        stage('kubeadm_upgrade'){
+            steps{
+                sh '''
+                
+                export KUBECONFIG=/var/lib/jenkins/admin.conf
+				
+				
+                
+                
+                    worker_nodes=$(kubectl get nodes -o wide | grep -vE 'master03|master02|master01' | awk '{print $6}' | sed 1d)
+                    
+                    workernew=(`echo $worker_nodes`)
+                     ##echo ${arraynew[@]}
+                          workerlength=${#workernew[@]}      
+
+				    
+                        for ((j=0; j<${workerlength}; j++));
+                        do 
+                            
+                            scp /var/binaries-${version}/kubeadm root@${workernew[$j]}:/usr/bin/kubeadm
+                            ##ssh root@${workernew[$j]} "yes | cp /home/user/kubeadm /usr/bin/kubeadm"
+                            ssh root@${workernew[$j]} "kubeadm upgrade node"
+                            sleep 2s
+                            v=$(ssh root@${workernew[$j]} "kubeadm version | grep -o ${version}")
+                            if [[ $v == ${version} ]];
+							then
+								echo "Kubeadm version is upgraded in ${workernew[$j]}"
+						
+							else
+								echo "Kubeadm version has not been upgraded in {workernew[$j]}"
+								##currentBuild.result= "FAILURE"
+								sh "exit 5"
+							fi
+							sleep 2s
+                        done
+						'''
+						}
+					}
+					
+			stage('drain_worker_nodes'){
+				steps{
+					sh '''
+							export KUBECONFIG=/var/lib/jenkins/admin.conf
+                            sleep 2s
+							drain_worker=$(kubectl get nodes -o wide | grep -vE 'master03|master02|master01' | awk '{print $1}' | sed 1d)
+                
+							arraydrainworker=(`echo $drain_worker`)
+							##echo ${arraynew[@]}
+							arraydrainworkerlength=${#arraydrainworker[@]}
+							
+							ssh root@<master ip> "kubectl scale deployment metrics-server --replicas 0 -n monitoring"
+							
+							ssh root@<master ip> "kubectl scale statefulset vault --replicas 0 -n prod"
+							
+							for ((j=0; j<${arraydrainworkerlength}; j++));
+							do
+                            
+								ssh root@<master ip> "kubectl drain ${arraydrainworker[$j]} --ignore-daemonsets"
+                            	sleep 2s
+                            	while [ $(kubectl get nodes ${arraydrainworker[$j]} | awk '{print $2}' | grep -o "Ready,SchedulingDisabled") != "Ready,SchedulingDisabled" ]
+                                    ##adding while loop for delay
+                                    do
+                                    :
+                                    done
+							done
+						'''
+					}
+				}		
+			
+			stage('kubelet_and_kubectl_upgrade'){
+				steps{
+					sh '''	
+							export KUBECONFIG=/var/lib/jenkins/admin.conf
+                            worker_nodes=$(kubectl get nodes -o wide | grep -vE 'master03|master02|master01' | awk '{print $6}' | sed 1d)
+                    
+							workernew=(`echo $worker_nodes`)
+							##echo ${arraynew[@]}
+								workerlength=${#workernew[@]}      
+
+				    
+							for ((j=0; j<${workerlength}; j++));
+							do 
+                                ssh root@${workernew[$j]} "systemctl stop kubelet"
+                            
+                                scp /var/binaries-${version}/kubelet root@${workernew[$j]}:/usr/bin/kubelet
+							    scp /var/binaries-${version}/kubectl root@${workernew[$j]}:/usr/bin/kubectl
+                                ##restarting kubelet
+                                
+                                ssh root@${workernew[$j]} "systemctl daemon-reload"
+							    sleep 2s
+                                ssh root@${workernew[$j]} "systemctl restart kubelet"
+							    sleep 2s
+                                ssh root@${workernew[$j]} "systemctl status kubelet"
+							    k=$(ssh root@${workernew[$j]} "systemctl status kubelet | grep -o active")
+							    if [[ $k == 'active' ]];
+							    then
+								    echo "Kubeletis not active in ${workernew[$j]}"
+						
+							    else
+								    echo "Kubelet is not active in ${workernew[$j]}"
+								    ##currentBuild.result= "FAILURE"
+								    sh "exit 4"
+							    fi
+                            
+                        
+                            
+                                a=$(ssh root@${workernew[$j]} "kubelet --version | grep -o ${version}")
+							    b=$(ssh root@${workernew[$j]} "export KUBECONFIG=/home/user/admin.conf && kubectl version | grep -o ${version} | sed 1d")
+							    if [[ $a == ${version} && $b == ${version} ]];
+							    then
+								    echo "Versions are upgraded in ${workernew[$j]}"
+						
+							    else
+								    echo "Versions are not upgraded in {workernew[$j]}"
+								    ##currentBuild.result= "FAILURE"
+								    sh "exit 5"
+							    fi
+							done
+						'''
+						
+						}
+					}
+                        
+                               
+                stage('uncordon_worker_node'){
+					steps{
+						sh '''  
+                            export KUBECONFIG=/var/lib/jenkins/admin.conf
+                            sleep 2s
+							drain_worker=$(kubectl get nodes -o wide | grep -vE 'master03|master02|master01' | awk '{print $1}' | sed 1d)
+                
+							arraydrainworker=(`echo $drain_worker`)
+							##echo ${arraynew[@]}
+							arraydrainworkerlength=${#arraydrainworker[@]}
+							
+							for ((j=0; j<${arraydrainworkerlength}; j++));
+							do
+								ssh root@<master ip> "kubectl uncordon ${arraydrainworker[$j]}"
+								sleep 2s
+                    		done
+                    		
+                    		ssh root@<master ip> "kubectl scale deployment metrics-server --replicas 1 -n monitoring"
+							
+							ssh root@<master ip> "kubectl scale statefulset vault --replicas 1 -n prod"
+                    
+                '''
+                }
+            }
+            
+            
+        }
+        
+    }
